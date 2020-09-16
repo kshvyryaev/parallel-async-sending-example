@@ -24,10 +24,20 @@ namespace ParallelAsyncSendingExample
 		private static async Task Main()
 		{
 			using var client = new HttpClient();
-			await HandleUrisAsync(client, (uri, html) => Console.WriteLine($"Retrieved {html.Length} characters from {uri} on thread with id = {Thread.CurrentThread.ManagedThreadId}."));
+
+			Console.WriteLine("SemaphoreSlim workflow:");
+			await HandleUrisBySemaphoreSlimAsync(client, Handler);
+
+			Console.WriteLine("Nito.AsyncEx.AsyncSemaphore workflow:");
+			await HandleUrisByAsyncExAsyncSemaphoreAsync(client, Handler);
+
+			Console.WriteLine("Microsoft.VisualStudio.Threading.AsyncSemaphore workflow:");
+			await HandleUrisByVSThreadingAsyncSemaphoreAsync(client, Handler);
+
+			static void Handler(string uri, string html) => Console.WriteLine($"Retrieved {html.Length} characters from {uri}.");
 		}
 
-		private static async Task HandleUrisAsync(HttpClient client, Action<string, string> handler)
+		private static async Task HandleUrisBySemaphoreSlimAsync(HttpClient client, Action<string, string> handler)
 		{
 			var throttler = new SemaphoreSlim(Environment.ProcessorCount);
 
@@ -44,6 +54,43 @@ namespace ParallelAsyncSendingExample
 				{
 					throttler.Release();
 				}
+			});
+
+			await Task.WhenAll(tasks);
+		}
+
+		private static async Task HandleUrisByAsyncExAsyncSemaphoreAsync(HttpClient client, Action<string, string> handler)
+		{
+			var throttler = new Nito.AsyncEx.AsyncSemaphore(Environment.ProcessorCount);
+
+			var tasks = _uris.Select(async uri =>
+			{
+				await throttler.WaitAsync();
+
+				try
+				{
+					var html = await client.GetStringAsync(uri);
+					handler(uri, html);
+				}
+				finally
+				{
+					throttler.Release();
+				}
+			});
+
+			await Task.WhenAll(tasks);
+		}
+
+		private static async Task HandleUrisByVSThreadingAsyncSemaphoreAsync(HttpClient client, Action<string, string> handler)
+		{
+			using var throttler = new Microsoft.VisualStudio.Threading.AsyncSemaphore(Environment.ProcessorCount);
+
+			var tasks = _uris.Select(async uri =>
+			{
+				using var releaser = await throttler.EnterAsync();
+
+				var html = await client.GetStringAsync(uri);
+				handler(uri, html);
 			});
 
 			await Task.WhenAll(tasks);
